@@ -10,6 +10,8 @@
 #include "esp32_camera.h"
 #include "plant_monitor.h"
 #include "onenet_client.h"
+#include "camera_web_server.h"
+#include <wifi_manager.h>
 
 #include <esp_log.h>
 #include <driver/i2c_master.h>
@@ -82,7 +84,7 @@ public:
         CreateSensorPanel();
     }
 
-    void UpdateSensorDisplay(const SensorData& data) {
+    void UpdateSensorDisplay(const SensorData& data, const SensorThresholds& thresholds) {
         if (!sensor_panel_) return;
         DisplayLockGuard lock(this);
         char buf[32];
@@ -99,6 +101,15 @@ public:
         snprintf(buf, sizeof(buf), "%s", data.soil_moisture ? "OK" : "DRY");
         lv_label_set_text(label_soil_, buf);
 
+        snprintf(buf, sizeof(buf), "T:%d-%d", thresholds.temp_min, thresholds.temp_max);
+        lv_label_set_text(label_temp_threshold_, buf);
+
+        snprintf(buf, sizeof(buf), "H:%d-%d", thresholds.humidity_min, thresholds.humidity_max);
+        lv_label_set_text(label_humi_threshold_, buf);
+
+        snprintf(buf, sizeof(buf), "L:%d-%d", thresholds.light_min, thresholds.light_max);
+        lv_label_set_text(label_light_threshold_, buf);
+
         lv_obj_set_style_text_color(label_pump_,  lv_color_hex(data.relay_pump   ? 0x00FF00 : 0x808080), 0);
         lv_obj_set_style_text_color(label_lamp_,  lv_color_hex(data.relay_light  ? 0xFFFF00 : 0x808080), 0);
         lv_obj_set_style_text_color(label_heat_,  lv_color_hex(data.relay_heater ? 0xFF4400 : 0x808080), 0);
@@ -113,13 +124,16 @@ private:
     lv_obj_t* label_pump_ = nullptr;
     lv_obj_t* label_lamp_ = nullptr;
     lv_obj_t* label_heat_ = nullptr;
+    lv_obj_t* label_temp_threshold_ = nullptr;
+    lv_obj_t* label_humi_threshold_ = nullptr;
+    lv_obj_t* label_light_threshold_ = nullptr;
 
     void CreateSensorPanel() {
         auto* screen = lv_screen_active();
         const lv_font_t* font = LV_FONT_DEFAULT;
 
         sensor_panel_ = lv_obj_create(screen);
-        lv_obj_set_size(sensor_panel_, 220, 170);
+        lv_obj_set_size(sensor_panel_, 220, 215);
         lv_obj_set_style_bg_opa(sensor_panel_, LV_OPA_30, 0);
         lv_obj_set_style_bg_color(sensor_panel_, lv_color_hex(0x000000), 0);
         lv_obj_set_style_border_width(sensor_panel_, 0, 0);
@@ -169,10 +183,45 @@ private:
         lv_label_set_text(label_soil_, "--");
         lv_obj_align(label_soil_, LV_ALIGN_TOP_LEFT, 120, 62);
 
+        // 阈值分隔线
+        lv_obj_t* line2 = lv_obj_create(sensor_panel_);
+        lv_obj_set_size(line2, 200, 1);
+        lv_obj_set_style_bg_color(line2, lv_color_hex(0x444444), 0);
+        lv_obj_set_style_border_width(line2, 0, 0);
+        lv_obj_align(line2, LV_ALIGN_TOP_MID, 0, 90);
+
+        // 阈值标题
+        lv_obj_t* thresh_title = lv_label_create(sensor_panel_);
+        lv_obj_set_style_text_font(thresh_title, font, 0);
+        lv_obj_set_style_text_color(thresh_title, lv_color_hex(0x888888), 0);
+        lv_label_set_text(thresh_title, "Thresholds:");
+        lv_obj_align(thresh_title, LV_ALIGN_TOP_LEFT, 8, 96);
+
+        // 温度阈值
+        label_temp_threshold_ = lv_label_create(sensor_panel_);
+        lv_obj_set_style_text_font(label_temp_threshold_, font, 0);
+        lv_obj_set_style_text_color(label_temp_threshold_, lv_color_hex(0xCC8888), 0);
+        lv_label_set_text(label_temp_threshold_, "T:18-32");
+        lv_obj_align(label_temp_threshold_, LV_ALIGN_TOP_LEFT, 8, 114);
+
+        // 湿度阈值
+        label_humi_threshold_ = lv_label_create(sensor_panel_);
+        lv_obj_set_style_text_font(label_humi_threshold_, font, 0);
+        lv_obj_set_style_text_color(label_humi_threshold_, lv_color_hex(0x8888CC), 0);
+        lv_label_set_text(label_humi_threshold_, "H:40-85");
+        lv_obj_align(label_humi_threshold_, LV_ALIGN_TOP_LEFT, 120, 114);
+
+        // 光照阈值
+        label_light_threshold_ = lv_label_create(sensor_panel_);
+        lv_obj_set_style_text_font(label_light_threshold_, font, 0);
+        lv_obj_set_style_text_color(label_light_threshold_, lv_color_hex(0xCCCC88), 0);
+        lv_label_set_text(label_light_threshold_, "L:2000-3000");
+        lv_obj_align(label_light_threshold_, LV_ALIGN_TOP_LEFT, 8, 132);
+
         // 继电器标识 + 状态标签（平铺）
-        label_pump_ = CreateRelayLabel(sensor_panel_, font, "PUMP",  8, 95);
-        label_lamp_ = CreateRelayLabel(sensor_panel_, font, "LIGHT", 8, 118);
-        label_heat_ = CreateRelayLabel(sensor_panel_, font, "HEAT",  8, 141);
+        label_pump_ = CreateRelayLabel(sensor_panel_, font, "PUMP",  8, 155);
+        label_lamp_ = CreateRelayLabel(sensor_panel_, font, "LIGHT", 8, 178);
+        label_heat_ = CreateRelayLabel(sensor_panel_, font, "HEAT",  8, 201);
     }
 
     lv_obj_t* CreateRelayLabel(lv_obj_t* parent, const lv_font_t* font,
@@ -192,6 +241,8 @@ private:
     PlantDisplay* display_;
     Esp32Camera* camera_;
     esp_timer_handle_t display_update_timer_ = nullptr;
+    CameraWebServer* web_server_ = nullptr;
+    bool web_server_started_ = false;
 
     void InitializeSpi() {
         spi_bus_config_t buscfg = {};
@@ -343,10 +394,23 @@ private:
         auto* self = static_cast<CompactWifiBoardS3Cam*>(arg);
         auto& app = Application::GetInstance();
         auto data = GetPlantMonitor().GetSensorData();
+        auto thresholds = GetPlantMonitor().GetThresholds();
 
-        app.Schedule([self, data]() {
+        // 自动启动Web服务器（网络就绪后首次触发）
+        if (!self->web_server_started_) {
+            auto& wifi = WifiManager::GetInstance();
+            if (wifi.IsConnected() && !wifi.GetIpAddress().empty()) {
+                self->web_server_ = new CameraWebServer();
+                if (self->web_server_->Start(80)) {
+                    self->web_server_started_ = true;
+                    ESP_LOGI(TAG, "摄像头Web服务器已启动 http://%s", wifi.GetIpAddress().c_str());
+                }
+            }
+        }
+
+        app.Schedule([self, data, thresholds]() {
             if (self->display_) {
-                self->display_->UpdateSensorDisplay(data);
+                self->display_->UpdateSensorDisplay(data, thresholds);
             }
         });
     }
@@ -390,6 +454,10 @@ public:
         if (display_update_timer_) {
             esp_timer_stop(display_update_timer_);
             esp_timer_delete(display_update_timer_);
+        }
+        if (web_server_) {
+            web_server_->Stop();
+            delete web_server_;
         }
     }
 

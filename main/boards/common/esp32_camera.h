@@ -41,4 +41,5 @@ public:
     virtual bool SetVFlip(bool enabled) override;
     virtual bool SetSwapBytes(bool enabled) override;
     virtual std::string Explain(const std::string &question) override;
+    virtual bool EncodeCurrentFrameToJpeg(std::string& jpeg_data, uint8_t quality = 80) override;
 };

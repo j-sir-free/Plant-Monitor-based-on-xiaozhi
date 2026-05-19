@@ -1,4 +1,5 @@
 #include "plant_monitor.h"
+#include "board.h"
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <esp_rom_sys.h>
@@ -83,6 +84,10 @@ PlantMonitor::~PlantMonitor() {
     if (update_timer_) {
         esp_timer_stop(update_timer_);
         esp_timer_delete(update_timer_);
+    }
+    if (init_delay_timer_) {
+        esp_timer_stop(init_delay_timer_);
+        esp_timer_delete(init_delay_timer_);
     }
     if (adc_handle_) {
         adc_oneshot_del_unit(adc_handle_);
@@ -291,6 +296,27 @@ void PlantMonitor::SetRelay(int relay_index, bool on) {
 #endif
     Pcf8574Write(pcf8574_output_state_);
 }
+// ==================== 仅读取传感器（初版：不执行自动控制）====================
+void PlantMonitor::ReadSensorsForInit() {
+    float temp = 0, hum = 0;
+    for (int retry = 0; retry < 3; retry++) {
+        if (Dht11Read(temp, hum)) {
+            sensor_data_.temperature = temp;
+            sensor_data_.humidity = hum;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    int light = LightSensorRead();
+    if (light >= 0) {
+        sensor_data_.light_value = light;
+    }
+    sensor_data_.soil_moisture = SoilMoistureRead();
+    ESP_LOGI(TAG, "初始传感器读数-温度:%.1f℃ 湿度:%.1f%% 光照:%d 土壤:%d",
+             sensor_data_.temperature, sensor_data_.humidity,
+             sensor_data_.light_value, sensor_data_.soil_moisture);
+}
+
 // ==================== 自动控制逻辑 ====================
 void PlantMonitor::AutoControl() {
     // 温度控制：温度低于下限 -> 开启加热片；高于上限 -> 关闭
@@ -369,7 +395,8 @@ void PlantMonitor::RegisterMcpTools() {
     mcp.AddTool(
         "plant.get_sensor_data",
         "获取植物生长环境的传感器数据。返回温度、湿度、光照、土壤湿度等当前值。\n"
-        "当用户询问植物生长状态、环境参数时使用此工具。",
+        "当用户询问植物生长状态、环境参数时使用此工具。\n"
+        "花卉养护参考：多数开花植物最适温度15-30℃、湿度40-80%；多肉植物温度10-35℃、湿度30-50%；热带植物温度20-35℃、湿度60-90%。",
         PropertyList(),
         [this](const PropertyList&) -> ReturnValue {
             Update();
@@ -525,7 +552,63 @@ void PlantMonitor::RegisterMcpTools() {
             return std::string(buf);
         }
     );
-    ESP_LOGI(TAG, "MCP植物监控工具已注册 (9个工具)");
+    // 植物环境综合分析：拍照 + 传感器，AI通过图像+数据综合判断
+    mcp.AddTool(
+        "plant.analyze_environment",
+        "读取所有植物生长传感器数据，并捕获摄像头图像供后续分析。\n"
+        "返回传感器JSON（温度/湿度/光照/土壤/阈值/继电器状态）。\n"
+        "摄像头帧已捕获到缓冲区，AI可随后调用 self.camera.take_photo 获取图像进行视觉分析。\n\n"
+        "===== 花卉养护知识库 =====\n"
+        "【通用开花植物】最适温度15-30℃，湿度40-80%，光照充足。低于10℃或高于35℃生长受阻。\n"
+        "【多肉植物】最适温度10-35℃，湿度30-50%，需少浇水，喜强光长日照。叶片发软=缺水，叶片发黄透明=水多。\n"
+        "【热带植物】如兰花、龟背竹：最适温度20-35℃，湿度60-90%，喜散射光。叶尖焦黄=空气太干或光照过强。\n"
+        "【草本花卉】如矮牵牛、万寿菊：最适温度15-28℃，湿度40-70%。\n"
+        "【蔬菜类】如番茄、辣椒：最适温度20-30℃，湿度50-70%，需充足光照。\n\n"
+        "温度判断：<10℃寒冷危险，>38℃高温危险，15-30℃为最佳区间。\n"
+        "湿度判断：<30%干燥需喷雾/浇水，40-80%正常，>90%过湿需通风防霉。\n"
+        "光照判断(ADC值)：<1000暗需补光，1000-2500散射光适合多数室内植物，>2500强光。\n"
+        "土壤判断：0(DRY)=需浇水，1(OK)=正常。\n"
+        "叶片观察（通过self.camera.take_photo）：黄叶=浇水过多或缺肥；卷叶=过干或过热；叶尖焦枯=肥害或湿度太低。\n"
+        "AI应根据传感器数值和摄像头图像，综合分析植物状态并主动调整阈值(plant.adjust_all_thresholds)或控制继电器(plant.control_*)。",
+        PropertyList(),
+        [this](const PropertyList&) -> ReturnValue {
+            // 读取最新传感器数据
+            Update();
+            auto& s = sensor_data_;
+
+            // 捕获摄像头帧（放入buffer，供后续 take_photo 使用）
+            auto* camera = Board::GetInstance().GetCamera();
+            bool cam_ok = false;
+            if (camera != nullptr) {
+                cam_ok = camera->Capture();
+            }
+
+            char buf[768];
+            snprintf(buf, sizeof(buf),
+                "{\"sensors\":{"
+                "\"temperature\":%.1f,\"humidity\":%.1f,"
+                "\"light\":%d,\"soil_moisture\":%d,"
+                "\"relay_pump\":%s,\"relay_light\":%s,\"relay_heater\":%s"
+                "},"
+                "\"thresholds\":{"
+                "\"temp\":[%d,%d],\"humidity\":[%d,%d],\"light\":[%d,%d]"
+                "},"
+                "\"camera_captured\":%s,"
+                "\"advice\":\"%s\"}",
+                s.temperature, s.humidity, s.light_value, s.soil_moisture,
+                s.relay_pump ? "true" : "false",
+                s.relay_light ? "true" : "false",
+                s.relay_heater ? "true" : "false",
+                thresholds_.temp_min, thresholds_.temp_max,
+                thresholds_.humidity_min, thresholds_.humidity_max,
+                thresholds_.light_min, thresholds_.light_max,
+                cam_ok ? "true" : "false",
+                cam_ok ? "摄像头图像已就绪，可调用self.camera.take_photo获取图像进行视觉分析"
+                       : "摄像头不可用，请仅基于传感器数据判断");
+            return std::string(buf);
+        }
+    );
+    ESP_LOGI(TAG, "MCP植物监控工具已注册 (10个工具)");
 }
 // ==================== 初始化 ====================
 // 应在摄像头初始化完成后调用（I2C_NUM_0已由SCCB配置）
@@ -555,21 +638,36 @@ void PlantMonitor::Initialize() {
     Dht11PinInit(DHT11_DATA_PIN);
     // 4. 注册MCP工具
     RegisterMcpTools();
-    // 5. 先执行一次传感器读取
-    Update();
-    // 6. 创建定时器，每30秒自动更新传感器数据
-    esp_timer_create_args_t timer_args = {
+    // 5. 读取一次传感器数据（用于LCD初始显示），不执行自动控制
+    ReadSensorsForInit();
+    // 6. 创建3秒延迟定时器，到期后启动周期性自动控制
+    esp_timer_create_args_t init_delay_args = {
         .callback = [](void* arg) {
             PlantMonitor* self = static_cast<PlantMonitor*>(arg);
-            self->Update();
+            esp_timer_create_args_t timer_args = {
+                .callback = [](void* timer_arg) {
+                    PlantMonitor* monitor = static_cast<PlantMonitor*>(timer_arg);
+                    monitor->Update();
+                },
+                .arg = self,
+                .dispatch_method = ESP_TIMER_TASK,
+                .name = "plant_monitor_timer",
+                .skip_unhandled_events = false,
+            };
+            ESP_ERROR_CHECK(esp_timer_create(&timer_args, &self->update_timer_));
+            ESP_ERROR_CHECK(esp_timer_start_periodic(self->update_timer_, 5000000));
+            self->auto_control_enabled_ = true;
+            esp_timer_delete(self->init_delay_timer_);
+            self->init_delay_timer_ = nullptr;
+            ESP_LOGI(TAG, "自动控制已启动（上电3秒延迟）");
         },
         .arg = this,
         .dispatch_method = ESP_TIMER_TASK,
-        .name = "plant_monitor_timer",
+        .name = "plant_init_delay",
         .skip_unhandled_events = false,
     };
-    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &update_timer_));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(update_timer_, 5000000));  // 5秒
+    ESP_ERROR_CHECK(esp_timer_create(&init_delay_args, &init_delay_timer_));
+    ESP_ERROR_CHECK(esp_timer_start_once(init_delay_timer_, 3000000));  // 3秒
     initialized_ = true;
     ESP_LOGI(TAG, "植物监控系统初始化完成");
 }

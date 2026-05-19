@@ -78,6 +78,9 @@ private:
     // 土壤湿度读取（通过PCF8574 DO引脚）
     int SoilMoistureRead();
 
+    // 仅读取传感器数据（不执行自动控制），用于初始化时显示
+    void ReadSensorsForInit();
+
     // 自动控制逻辑：根据传感器值和阈值控制继电器
     void AutoControl();
 
@@ -89,8 +92,10 @@ private:
     SensorThresholds thresholds_;
     adc_oneshot_unit_handle_t adc_handle_;
     esp_timer_handle_t update_timer_;
+    esp_timer_handle_t init_delay_timer_ = nullptr;
     bool initialized_ = false;
     uint8_t pcf8574_output_state_;  // PCF8574当前输出状态
+    bool auto_control_enabled_ = false;  // 自动控制是否已启动
 };
 
 // 单例访问辅助函数

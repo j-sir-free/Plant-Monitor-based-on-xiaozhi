@@ -129,6 +129,42 @@ bool Esp32Camera::Capture() {
     return true;
 }
 
+bool Esp32Camera::EncodeCurrentFrameToJpeg(std::string& jpeg_data, uint8_t quality) {
+    if (current_fb_ == nullptr) {
+        ESP_LOGW(TAG, "No frame to encode");
+        return false;
+    }
+
+    v4l2_pix_fmt_t enc_fmt;
+    switch (current_fb_->format) {
+        case PIXFORMAT_RGB565: enc_fmt = V4L2_PIX_FMT_RGB565; break;
+        case PIXFORMAT_YUV422: enc_fmt = V4L2_PIX_FMT_YUYV;   break;
+        case PIXFORMAT_JPEG:   enc_fmt = V4L2_PIX_FMT_JPEG;   break;
+        default:
+            ESP_LOGW(TAG, "Unsupported pixel format: %d", current_fb_->format);
+            return false;
+    }
+
+    uint8_t *src_buf = current_fb_->buf;
+    size_t src_len = current_fb_->len;
+    if (current_fb_->format == PIXFORMAT_RGB565 && encode_buf_ != nullptr) {
+        src_buf = encode_buf_;
+        src_len = encode_buf_size_;
+    }
+
+    jpeg_data.clear();
+    bool ok = image_to_jpeg_cb(src_buf, src_len, current_fb_->width, current_fb_->height,
+                               enc_fmt, quality,
+                               [](void* arg, size_t index, const void* data, size_t len) -> size_t {
+                                   if (index == 0 && data != nullptr && len > 0) {
+                                       auto* str = static_cast<std::string*>(arg);
+                                       str->append((const char*)data, len);
+                                   }
+                                   return len;
+                               }, &jpeg_data);
+    return ok && !jpeg_data.empty();
+}
+
 bool Esp32Camera::SetHMirror(bool enabled) {
     sensor_t *s = esp_camera_sensor_get();
     if (!s) {

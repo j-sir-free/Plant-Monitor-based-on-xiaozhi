@@ -11,6 +11,7 @@ public:
     virtual bool SetVFlip(bool enabled) = 0;
     virtual bool SetSwapBytes(bool enabled) { return false; }  // Optional, default no-op
     virtual std::string Explain(const std::string& question) = 0;
+    virtual bool EncodeCurrentFrameToJpeg(std::string& jpeg_data, uint8_t quality = 80) { return false; }
 };
 
 #endif // CAMERA_H
