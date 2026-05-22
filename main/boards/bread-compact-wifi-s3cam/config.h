@@ -326,11 +326,11 @@
 #define LIGHT_SENSOR_INVERTED
 
 // OneNET 云平台配置
-#define ONENET_PRODUCT_ID   "Kp43RWJB3j"
+#define ONENET_PRODUCT_ID   ""
 #define ONENET_DEVICE_NAME  "esp32s3"
 // 此密码由Token工具(https://open.iot.10086.cn/doc/v5/fuse/detail/919)生成
 // 参数: device_key=你的设备Key, res=products/Kp43RWJB3j/devices/esp32s3, et=2524579200
-#define ONENET_PASSWORD     "version=2018-10-31&res=products%2FKp43RWJB3j%2Fdevices%2Fesp32s3&et=2524579200&method=md5&sign=V%2FQ7odRsYd8uU2ikvi3o8w%3D%3D"
+#define ONENET_PASSWORD     ""
 
 // OneNET MQTT 服务器配置
 #define ONENET_MQTT_BROKER  "mqtts.heclouds.com"
