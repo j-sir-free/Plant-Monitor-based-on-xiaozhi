@@ -98,8 +98,19 @@ public:
         snprintf(buf, sizeof(buf), "%d", data.light_value);
         lv_label_set_text(label_light_, buf);
 
-        snprintf(buf, sizeof(buf), "%s", data.soil_moisture ? "OK" : "DRY");
+        snprintf(buf, sizeof(buf), "%d%%", data.soil_moisture_percent);
         lv_label_set_text(label_soil_, buf);
+
+        // 土壤湿度颜色: 红色(干燥<20%) 绿色(正常20-60%) 蓝色(湿润>60%)
+        lv_color_t soil_color;
+        if (data.soil_moisture_percent < 20) {
+            soil_color = lv_color_hex(0xFF4444);
+        } else if (data.soil_moisture_percent < 60) {
+            soil_color = lv_color_hex(0x88FF88);
+        } else {
+            soil_color = lv_color_hex(0x4488FF);
+        }
+        lv_obj_set_style_text_color(label_soil_, soil_color, 0);
 
         snprintf(buf, sizeof(buf), "T:%d-%d", thresholds.temp_min, thresholds.temp_max);
         lv_label_set_text(label_temp_threshold_, buf);
@@ -109,6 +120,9 @@ public:
 
         snprintf(buf, sizeof(buf), "L:%d-%d", thresholds.light_min, thresholds.light_max);
         lv_label_set_text(label_light_threshold_, buf);
+
+        snprintf(buf, sizeof(buf), "S:%d%%", thresholds.soil_moisture_dry);
+        lv_label_set_text(label_soil_threshold_, buf);
 
         lv_obj_set_style_text_color(label_pump_,  lv_color_hex(data.relay_pump   ? 0x00FF00 : 0x808080), 0);
         lv_obj_set_style_text_color(label_lamp_,  lv_color_hex(data.relay_light  ? 0xFFFF00 : 0x808080), 0);
@@ -127,6 +141,7 @@ private:
     lv_obj_t* label_temp_threshold_ = nullptr;
     lv_obj_t* label_humi_threshold_ = nullptr;
     lv_obj_t* label_light_threshold_ = nullptr;
+    lv_obj_t* label_soil_threshold_ = nullptr;
 
     void CreateSensorPanel() {
         auto* screen = lv_screen_active();
@@ -180,7 +195,7 @@ private:
         label_soil_ = lv_label_create(sensor_panel_);
         lv_obj_set_style_text_font(label_soil_, font, 0);
         lv_obj_set_style_text_color(label_soil_, lv_color_hex(0x88FF88), 0);
-        lv_label_set_text(label_soil_, "--");
+        lv_label_set_text(label_soil_, "0%");
         lv_obj_align(label_soil_, LV_ALIGN_TOP_LEFT, 120, 62);
 
         // 阈值分隔线
@@ -217,6 +232,13 @@ private:
         lv_obj_set_style_text_color(label_light_threshold_, lv_color_hex(0xCCCC88), 0);
         lv_label_set_text(label_light_threshold_, "L:2000-3000");
         lv_obj_align(label_light_threshold_, LV_ALIGN_TOP_LEFT, 8, 132);
+
+        // 土壤湿度阈值
+        label_soil_threshold_ = lv_label_create(sensor_panel_);
+        lv_obj_set_style_text_font(label_soil_threshold_, font, 0);
+        lv_obj_set_style_text_color(label_soil_threshold_, lv_color_hex(0x88CC88), 0);
+        lv_label_set_text(label_soil_threshold_, "S:20%");
+        lv_obj_align(label_soil_threshold_, LV_ALIGN_TOP_LEFT, 120, 132);
 
         // 继电器标识 + 状态标签（平铺）
         label_pump_ = CreateRelayLabel(sensor_panel_, font, "PUMP",  8, 155);
@@ -345,6 +367,7 @@ private:
             cJSON* humi_max = cJSON_GetObjectItem(root, "humidity_max");
             cJSON* light_min = cJSON_GetObjectItem(root, "light_min");
             cJSON* light_max = cJSON_GetObjectItem(root, "light_max");
+            cJSON* soil_dry = cJSON_GetObjectItem(root, "soil_moisture_dry");
 
             if (temp_min && temp_max && humi_min && humi_max && light_min && light_max) {
                 SensorThresholds t;
@@ -354,6 +377,7 @@ private:
                 t.humidity_max = humi_max->valueint;
                 t.light_min = light_min->valueint;
                 t.light_max = light_max->valueint;
+                if (soil_dry) t.soil_moisture_dry = soil_dry->valueint;
                 monitor.SetThresholds(t);
                 cJSON_Delete(root);
                 return "{\"success\":true,\"message\":\"阈值已更新\"}";
@@ -371,12 +395,13 @@ private:
             if (refresh) {
                 monitor.Update();
                 auto data = monitor.GetSensorData();
-                char buf[256];
+                char buf[320];
                 snprintf(buf, sizeof(buf),
                     "{\"temperature\":%.1f,\"humidity\":%.1f,\"light\":%d,"
-                    "\"soil\":%d,\"pump\":%s,\"light_relay\":%s,\"heater\":%s}",
+                    "\"soil_percent\":%d,\"soil_raw\":%d,"
+                    "\"pump\":%s,\"light_relay\":%s,\"heater\":%s}",
                     data.temperature, data.humidity, data.light_value,
-                    data.soil_moisture,
+                    data.soil_moisture_percent, data.soil_moisture_raw,
                     data.relay_pump ? "true" : "false",
                     data.relay_light ? "true" : "false",
                     data.relay_heater ? "true" : "false");

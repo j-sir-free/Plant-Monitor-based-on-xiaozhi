@@ -325,12 +325,26 @@
 // 光照传感器模式：光照越强ADC值越低，取消注释下面一行
 #define LIGHT_SENSOR_INVERTED
 
+// ADS1115 I2C ADC 模块 (16-bit, 地址0x48, 与PCF8574共用I2C总线)
+#define ADS1115_I2C_ADDR            0x48
+#define ADS1115_REG_CONVERSION      0x00
+#define ADS1115_REG_CONFIG          0x01
+// 配置: AIN0 vs GND, ±4.096V, 连续转换, 128 SPS
+#define ADS1115_CONFIG_MSB          0x84
+#define ADS1115_CONFIG_LSB          0x83
+
+// 土壤湿度传感器校准值 (需根据实际传感器标定)
+// AIR_VALUE: 传感器在空气中(干燥)时的ADC读数
+// WATER_VALUE: 传感器浸入水中时的ADC读数
+#define SOIL_MOISTURE_AIR_VALUE     26000
+#define SOIL_MOISTURE_WATER_VALUE   8000
+
 // OneNET 云平台配置
-#define ONENET_PRODUCT_ID   ""
+#define ONENET_PRODUCT_ID   "Kp43RWJB3j"
 #define ONENET_DEVICE_NAME  "esp32s3"
 // 此密码由Token工具(https://open.iot.10086.cn/doc/v5/fuse/detail/919)生成
 // 参数: device_key=你的设备Key, res=products/Kp43RWJB3j/devices/esp32s3, et=2524579200
-#define ONENET_PASSWORD     ""
+#define ONENET_PASSWORD     "version=2018-10-31&res=products%2FKp43RWJB3j%2Fdevices%2Fesp32s3&et=2524579200&method=md5&sign=V%2FQ7odRsYd8uU2ikvi3o8w%3D%3D"
 
 // OneNET MQTT 服务器配置
 #define ONENET_MQTT_BROKER  "mqtts.heclouds.com"

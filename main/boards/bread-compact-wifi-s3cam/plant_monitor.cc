@@ -264,11 +264,80 @@ int PlantMonitor::LightSensorRead() {
     return adc_raw;
 }
 // ==================== 土壤湿度读取 ====================
-int PlantMonitor::SoilMoistureRead() {
-    // 读取PCF8574输入状态
+int PlantMonitor::SoilMoistureReadDigital() {
     uint8_t input = Pcf8574Read();
-    // P4位：0=干燥（需要浇水），1=潮湿
     return (input >> PCF8574_PIN_SOIL_DO) & 0x01;
+}
+
+// ==================== ADS1115 I2C ADC 驱动 ====================
+// 与PCF8574共用位模拟I2C总线 (GPIO4=SDA, GPIO5=SCL)
+// ADS1115: 16-bit delta-sigma ADC, I2C地址 0x48 (ADDR=GND)
+
+static bool Ads1115WriteRegister(uint8_t reg, uint16_t value) {
+    I2cStart();
+    bool ack1 = I2cWriteByte((ADS1115_I2C_ADDR << 1) | 0x00);
+    if (!ack1) { I2cStop(); return false; }
+    bool ack2 = I2cWriteByte(reg);
+    bool ack3 = I2cWriteByte((value >> 8) & 0xFF);
+    bool ack4 = I2cWriteByte(value & 0xFF);
+    I2cStop();
+    return ack1 && ack2 && ack3 && ack4;
+}
+
+bool PlantMonitor::Ads1115ReadConversion(int16_t* result) {
+    I2cStart();
+    bool ack1 = I2cWriteByte((ADS1115_I2C_ADDR << 1) | 0x00);
+    if (!ack1) { I2cStop(); return false; }
+    bool ack2 = I2cWriteByte(ADS1115_REG_CONVERSION);
+    I2cStop();
+    if (!ack2) return false;
+
+    I2cStart();
+    bool ack3 = I2cWriteByte((ADS1115_I2C_ADDR << 1) | 0x01);
+    if (!ack3) { I2cStop(); return false; }
+    uint8_t msb = I2cReadByte(true);
+    uint8_t lsb = I2cReadByte(false);
+    I2cStop();
+
+    *result = ((int16_t)msb << 8) | lsb;
+    return true;
+}
+
+bool PlantMonitor::Ads1115Init() {
+    uint16_t config = (ADS1115_CONFIG_MSB << 8) | ADS1115_CONFIG_LSB;
+    if (!Ads1115WriteRegister(ADS1115_REG_CONFIG, config)) {
+        ESP_LOGW(TAG, "ADS1115未检测到 (地址0x%02X)，请检查接线", ADS1115_I2C_ADDR);
+        return false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    int16_t test_val = 0;
+    if (!Ads1115ReadConversion(&test_val)) {
+        ESP_LOGW(TAG, "ADS1115读取失败");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "ADS1115初始化成功 (I2C地址0x%02X, 初始值=%d)", ADS1115_I2C_ADDR, test_val);
+    return true;
+}
+
+void PlantMonitor::SoilMoistureReadAnalog() {
+    if (!ads1115_present_) return;
+
+    int16_t raw = 0;
+    if (!Ads1115ReadConversion(&raw)) {
+        ESP_LOGW(TAG, "ADS1115土壤湿度读取失败");
+        return;
+    }
+
+    sensor_data_.soil_moisture_raw = (int)raw;
+
+    // 转换为百分比: 0% = 干燥(空气中), 100% = 浸入水中
+    int percent = 100 - (raw - SOIL_MOISTURE_WATER_VALUE) * 100
+                       / (SOIL_MOISTURE_AIR_VALUE - SOIL_MOISTURE_WATER_VALUE);
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    sensor_data_.soil_moisture_percent = percent;
 }
 // ==================== 继电器控制 ====================
 void PlantMonitor::SetRelay(int relay_index, bool on) {
@@ -311,10 +380,16 @@ void PlantMonitor::ReadSensorsForInit() {
     if (light >= 0) {
         sensor_data_.light_value = light;
     }
-    sensor_data_.soil_moisture = SoilMoistureRead();
-    ESP_LOGI(TAG, "初始传感器读数-温度:%.1f℃ 湿度:%.1f%% 光照:%d 土壤:%d",
+    sensor_data_.soil_moisture_digital = (SoilMoistureReadDigital() == 1);
+    if (ads1115_present_) {
+        SoilMoistureReadAnalog();
+    } else {
+        sensor_data_.soil_moisture_percent = sensor_data_.soil_moisture_digital ? 100 : 0;
+    }
+    ESP_LOGI(TAG, "初始传感器读数-温度:%.1f℃ 湿度:%.1f%% 光照:%d 土壤:%d%%(raw:%d dig:%d)",
              sensor_data_.temperature, sensor_data_.humidity,
-             sensor_data_.light_value, sensor_data_.soil_moisture);
+             sensor_data_.light_value, sensor_data_.soil_moisture_percent,
+             sensor_data_.soil_moisture_raw, sensor_data_.soil_moisture_digital);
 }
 
 // ==================== 自动控制逻辑 ====================
@@ -343,9 +418,9 @@ void PlantMonitor::AutoControl() {
     }
 #endif
 
-    bool need_water = (sensor_data_.soil_moisture == 0) ||
+    bool need_water = (sensor_data_.soil_moisture_percent < thresholds_.soil_moisture_dry) ||
                       (sensor_data_.humidity < thresholds_.humidity_min);
-    bool water_ok = (sensor_data_.soil_moisture == 1) &&
+    bool water_ok = (sensor_data_.soil_moisture_percent > 70) &&
                     (sensor_data_.humidity > thresholds_.humidity_max);
     if (need_water) {
         SetRelay(0, true);
@@ -371,22 +446,28 @@ void PlantMonitor::Update() {
     if (light >= 0) {
         sensor_data_.light_value = light;
     }
-    // 读取土壤湿度
-    sensor_data_.soil_moisture = SoilMoistureRead();
+    // 读取土壤湿度（模拟值优先，数字值作后备）
+    sensor_data_.soil_moisture_digital = (SoilMoistureReadDigital() == 1);
+    if (ads1115_present_) {
+        SoilMoistureReadAnalog();
+    } else {
+        sensor_data_.soil_moisture_percent = sensor_data_.soil_moisture_digital ? 100 : 0;
+    }
     // 执行自动控制
     AutoControl();
-    ESP_LOGI(TAG, "温度:%.1f℃ 湿度:%.1f%% 光照:%d 土壤:%d 水泵:%d 灯光:%d 加热:%d",
+    ESP_LOGI(TAG, "温度:%.1f℃ 湿度:%.1f%% 光照:%d 土壤:%d%% 水泵:%d 灯光:%d 加热:%d",
              sensor_data_.temperature, sensor_data_.humidity,
-             sensor_data_.light_value, sensor_data_.soil_moisture,
+             sensor_data_.light_value, sensor_data_.soil_moisture_percent,
              sensor_data_.relay_pump, sensor_data_.relay_light, sensor_data_.relay_heater);
 }
 // ==================== 阈值设置 ====================
 void PlantMonitor::SetThresholds(const SensorThresholds& t) {
     thresholds_ = t;
-    ESP_LOGI(TAG, "阈值已更新: T[%d-%d]℃ H[%d-%d]%% L[%d-%d]",
+    ESP_LOGI(TAG, "阈值已更新: T[%d-%d]℃ H[%d-%d]%% L[%d-%d] S[%d%%]",
              thresholds_.temp_min, thresholds_.temp_max,
              thresholds_.humidity_min, thresholds_.humidity_max,
-             thresholds_.light_min, thresholds_.light_max);
+             thresholds_.light_min, thresholds_.light_max,
+             thresholds_.soil_moisture_dry);
 }
 // ==================== MCP 工具注册 ====================
 void PlantMonitor::RegisterMcpTools() {
@@ -401,12 +482,16 @@ void PlantMonitor::RegisterMcpTools() {
         [this](const PropertyList&) -> ReturnValue {
             Update();
             auto& s = sensor_data_;
-            char buf[384];
+            char buf[512];
             snprintf(buf, sizeof(buf),
                 "{\"temperature\":%.1f,\"humidity\":%.1f,\"light\":%d,"
-                "\"soil_moisture\":%d,\"relay_pump\":%s,\"relay_light\":%s,"
+                "\"soil_moisture_percent\":%d,\"soil_moisture_raw\":%d,"
+                "\"soil_moisture_digital\":%s,"
+                "\"relay_pump\":%s,\"relay_light\":%s,"
                 "\"relay_heater\":%s}",
-                s.temperature, s.humidity, s.light_value, s.soil_moisture,
+                s.temperature, s.humidity, s.light_value,
+                s.soil_moisture_percent, s.soil_moisture_raw,
+                s.soil_moisture_digital ? "true" : "false",
                 s.relay_pump ? "true" : "false",
                 s.relay_light ? "true" : "false",
                 s.relay_heater ? "true" : "false");
@@ -476,17 +561,37 @@ void PlantMonitor::RegisterMcpTools() {
         "获取当前所有控制阈值（温度、湿度、光照的上下限）。",
         PropertyList(),
         [this](const PropertyList&) -> ReturnValue {
-            char buf[256];
+            char buf[320];
             snprintf(buf, sizeof(buf),
                 "{\"temp_min\":%d,\"temp_max\":%d,"
                 "\"humidity_min\":%d,\"humidity_max\":%d,"
-                "\"light_min\":%d,\"light_max\":%d}",
+                "\"light_min\":%d,\"light_max\":%d,"
+                "\"soil_moisture_dry\":%d}",
                 thresholds_.temp_min, thresholds_.temp_max,
                 thresholds_.humidity_min, thresholds_.humidity_max,
-                thresholds_.light_min, thresholds_.light_max);
+                thresholds_.light_min, thresholds_.light_max,
+                thresholds_.soil_moisture_dry);
             return std::string(buf);
         }
     );
+    // 设置土壤湿度阈值
+    mcp.AddTool(
+        "plant.set_soil_moisture_threshold",
+        "设置土壤湿度浇水阈值。当土壤湿度百分比低于此阈值时开启水泵浇水。\n"
+        "参数：`soil_moisture_dry`(干燥阈值%%, 0-100)",
+        PropertyList({
+            Property("soil_moisture_dry", kPropertyTypeInteger, 0, 100),
+        }),
+        [this](const PropertyList& props) -> ReturnValue {
+            thresholds_.soil_moisture_dry = props["soil_moisture_dry"].value<int>();
+            char buf[128];
+            snprintf(buf, sizeof(buf),
+                "{\"message\":\"土壤湿度阈值已设置为%d%%\"}",
+                thresholds_.soil_moisture_dry);
+            return std::string(buf);
+        }
+    );
+
     // 手动控制水泵
     mcp.AddTool(
         "plant.control_pump",
@@ -527,7 +632,8 @@ void PlantMonitor::RegisterMcpTools() {
         "AI可以通过分析摄像头图像判断植物状态后自动调用。\n"
         "参数：`temp_min`(最低温度), `temp_max`(最高温度), "
         "`humidity_min`(最低湿度), `humidity_max`(最高湿度), "
-        "`light_min`(最低光照), `light_max`(最高光照)",
+        "`light_min`(最低光照), `light_max`(最高光照), "
+        "`soil_moisture_dry`(土壤干燥阈值%%, 可选, 默认20)",
         PropertyList({
             Property("temp_min", kPropertyTypeInteger, 0, 60),
             Property("temp_max", kPropertyTypeInteger, 0, 60),
@@ -535,6 +641,7 @@ void PlantMonitor::RegisterMcpTools() {
             Property("humidity_max", kPropertyTypeInteger, 10, 100),
             Property("light_min", kPropertyTypeInteger, 0, 4095),
             Property("light_max", kPropertyTypeInteger, 0, 4095),
+            Property("soil_moisture_dry", kPropertyTypeInteger, 0, 100),
         }),
         [this](const PropertyList& props) -> ReturnValue {
             thresholds_.temp_min = props["temp_min"].value<int>();
@@ -543,12 +650,14 @@ void PlantMonitor::RegisterMcpTools() {
             thresholds_.humidity_max = props["humidity_max"].value<int>();
             thresholds_.light_min = props["light_min"].value<int>();
             thresholds_.light_max = props["light_max"].value<int>();
-            char buf[320];
+            thresholds_.soil_moisture_dry = props["soil_moisture_dry"].value<int>();
+            char buf[384];
             snprintf(buf, sizeof(buf),
-                "{\"message\":\"所有阈值已更新：温度%d-%d℃, 湿度%d-%d%%, 光照%d-%d\"}",
+                "{\"message\":\"所有阈值已更新：温度%d-%d℃, 湿度%d-%d%%, 光照%d-%d, 土壤干燥<%d%%\"}",
                 thresholds_.temp_min, thresholds_.temp_max,
                 thresholds_.humidity_min, thresholds_.humidity_max,
-                thresholds_.light_min, thresholds_.light_max);
+                thresholds_.light_min, thresholds_.light_max,
+                thresholds_.soil_moisture_dry);
             return std::string(buf);
         }
     );
@@ -567,7 +676,7 @@ void PlantMonitor::RegisterMcpTools() {
         "温度判断：<10℃寒冷危险，>38℃高温危险，15-30℃为最佳区间。\n"
         "湿度判断：<30%干燥需喷雾/浇水，40-80%正常，>90%过湿需通风防霉。\n"
         "光照判断(ADC值)：<1000暗需补光，1000-2500散射光适合多数室内植物，>2500强光。\n"
-        "土壤判断：0(DRY)=需浇水，1(OK)=正常。\n"
+        "土壤判断(百分比)：0%%=完全干燥，100%%=浸入水中。0-20%%=需浇水，20-60%%=偏干但可接受，>60%%=湿润正常。\n"
         "叶片观察（通过self.camera.take_photo）：黄叶=浇水过多或缺肥；卷叶=过干或过热；叶尖焦枯=肥害或湿度太低。\n"
         "AI应根据传感器数值和摄像头图像，综合分析植物状态并主动调整阈值(plant.adjust_all_thresholds)或控制继电器(plant.control_*)。",
         PropertyList(),
@@ -583,32 +692,38 @@ void PlantMonitor::RegisterMcpTools() {
                 cam_ok = camera->Capture();
             }
 
-            char buf[768];
+            char buf[896];
             snprintf(buf, sizeof(buf),
                 "{\"sensors\":{"
                 "\"temperature\":%.1f,\"humidity\":%.1f,"
-                "\"light\":%d,\"soil_moisture\":%d,"
+                "\"light\":%d,"
+                "\"soil_moisture_percent\":%d,\"soil_moisture_raw\":%d,"
+                "\"soil_moisture_digital\":%s,"
                 "\"relay_pump\":%s,\"relay_light\":%s,\"relay_heater\":%s"
                 "},"
                 "\"thresholds\":{"
-                "\"temp\":[%d,%d],\"humidity\":[%d,%d],\"light\":[%d,%d]"
+                "\"temp\":[%d,%d],\"humidity\":[%d,%d],\"light\":[%d,%d],"
+                "\"soil_moisture_dry\":%d"
                 "},"
                 "\"camera_captured\":%s,"
                 "\"advice\":\"%s\"}",
-                s.temperature, s.humidity, s.light_value, s.soil_moisture,
+                s.temperature, s.humidity, s.light_value,
+                s.soil_moisture_percent, s.soil_moisture_raw,
+                s.soil_moisture_digital ? "true" : "false",
                 s.relay_pump ? "true" : "false",
                 s.relay_light ? "true" : "false",
                 s.relay_heater ? "true" : "false",
                 thresholds_.temp_min, thresholds_.temp_max,
                 thresholds_.humidity_min, thresholds_.humidity_max,
                 thresholds_.light_min, thresholds_.light_max,
+                thresholds_.soil_moisture_dry,
                 cam_ok ? "true" : "false",
                 cam_ok ? "摄像头图像已就绪，可调用self.camera.take_photo获取图像进行视觉分析"
                        : "摄像头不可用，请仅基于传感器数据判断");
             return std::string(buf);
         }
     );
-    ESP_LOGI(TAG, "MCP植物监控工具已注册 (10个工具)");
+    ESP_LOGI(TAG, "MCP植物监控工具已注册 (11个工具)");
 }
 // ==================== 初始化 ====================
 // 应在摄像头初始化完成后调用（I2C_NUM_0已由SCCB配置）
@@ -622,7 +737,11 @@ void PlantMonitor::Initialize() {
     if (!Pcf8574Init()) {
         ESP_LOGW(TAG, "PCF8574初始化失败，继电器功能不可用");
     }
-    // 2. 初始化ADC（光照传感器，GPIO3=ADC1_CH2）
+
+    // 2. 初始化ADS1115（与PCF8574共用I2C总线，在PCF8574之后）
+    ads1115_present_ = Ads1115Init();
+
+    // 3. 初始化ADC（光照传感器，GPIO3=ADC1_CH2）
     adc_oneshot_unit_init_cfg_t adc_cfg = {
         .unit_id = LIGHT_SENSOR_ADC_UNIT,
         .clk_src = ADC_RTC_CLK_SRC_DEFAULT,
@@ -634,13 +753,17 @@ void PlantMonitor::Initialize() {
         .bitwidth = ADC_BITWIDTH_12,
     };
     ESP_ERROR_CHECK(adc_oneshot_config_channel(adc_handle_, LIGHT_SENSOR_ADC_CHANNEL, &chan_cfg));
-    // 3. 初始化DHT11 GPIO（开漏输出+上拉=单总线模式）
+
+    // 4. 初始化DHT11 GPIO（开漏输出+上拉=单总线模式）
     Dht11PinInit(DHT11_DATA_PIN);
-    // 4. 注册MCP工具
+
+    // 5. 注册MCP工具
     RegisterMcpTools();
-    // 5. 读取一次传感器数据（用于LCD初始显示），不执行自动控制
+
+    // 6. 读取一次传感器数据（用于LCD初始显示），不执行自动控制
     ReadSensorsForInit();
-    // 6. 创建3秒延迟定时器，到期后启动周期性自动控制
+
+    // 7. 创建3秒延迟定时器，到期后启动周期性自动控制
     esp_timer_create_args_t init_delay_args = {
         .callback = [](void* arg) {
             PlantMonitor* self = static_cast<PlantMonitor*>(arg);

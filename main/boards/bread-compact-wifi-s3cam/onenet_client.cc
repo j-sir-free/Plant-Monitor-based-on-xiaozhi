@@ -156,19 +156,21 @@ bool OnenetClient::UploadSensorData(const SensorData& data) {
         "$sys/%s/%s/thing/property/post",
         ONENET_PRODUCT_ID, ONENET_DEVICE_NAME);
 
-    char payload[512];
+    char payload[640];
     snprintf(payload, sizeof(payload),
         "{\"id\":\"%d\",\"version\":\"1.0\",\"params\":{"
         "\"temperature\":{\"value\":%.1f},"
         "\"humidity\":{\"value\":%.1f},"
         "\"light\":{\"value\":%d},"
-        "\"soil_moisture\":{\"value\":%d},"
+        "\"soil_moisture_percent\":{\"value\":%d},"
+        "\"soil_moisture_raw\":{\"value\":%d},"
         "\"relay_pump\":{\"value\":%d},"
         "\"relay_light\":{\"value\":%d},"
         "\"relay_heater\":{\"value\":%d}"
         "}}",
         msg_id_++, data.temperature, data.humidity,
-        data.light_value, data.soil_moisture,
+        data.light_value,
+        data.soil_moisture_percent, data.soil_moisture_raw,
         data.relay_pump ? 1 : 0,
         data.relay_light ? 1 : 0,
         data.relay_heater ? 1 : 0);
@@ -176,7 +178,7 @@ bool OnenetClient::UploadSensorData(const SensorData& data) {
     int ret = esp_mqtt_client_publish((esp_mqtt_client_handle_t)mqtt_client_,
         topic, payload, 0, 1, 0);
     if (ret >= 0) {
-        ESP_LOGI(TAG, "数据已上传: T=%.1f℃ H=%.1f%% L=%d", data.temperature, data.humidity, data.light_value);
+        ESP_LOGI(TAG, "数据已上传: T=%.1f℃ H=%.1f%% L=%d S=%d%%", data.temperature, data.humidity, data.light_value, data.soil_moisture_percent);
         return true;
     }
     ESP_LOGW(TAG, "数据上传失败");

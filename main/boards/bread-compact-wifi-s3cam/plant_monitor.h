@@ -19,18 +19,20 @@ struct SensorThresholds {
     int humidity_max = 85;      // 最高湿度 (%)
     int light_min = 2000;        // 最低光照 (ADC原始值)
     int light_max = 3000;       // 最高光照 (ADC原始值)
-    int soil_moisture_dry = 0;  // 土壤干燥阈值（DO=0表示干燥）
+    int soil_moisture_dry = 20; // 土壤干燥阈值 (%%, 低于此值开启水泵)
 };
 
 // 传感器数据结构体
 struct SensorData {
-    float temperature = 0.0f;   // 温度 (℃)
-    float humidity = 0.0f;      // 湿度 (%)
-    int light_value = 0;        // 光照 ADC 值 (0-4095)
-    int soil_moisture = 0;      // 土壤湿度 (0=干燥, 1=潮湿)
-    bool relay_pump = false;    // 水泵状态
-    bool relay_light = false;   // 补光灯状态
-    bool relay_heater = false;  // 加热片状态
+    float temperature = 0.0f;       // 温度 (℃)
+    float humidity = 0.0f;          // 湿度 (%)
+    int light_value = 0;            // 光照 ADC 值 (0-4095)
+    int soil_moisture_raw = 0;      // 土壤湿度 ADS1115 原始值
+    int soil_moisture_percent = 0;  // 土壤湿度 百分比 (0-100%%)
+    bool soil_moisture_digital = false; // 土壤湿度 数字量 (PCF8574 DO, 后备)
+    bool relay_pump = false;        // 水泵状态
+    bool relay_light = false;       // 补光灯状态
+    bool relay_heater = false;      // 加热片状态
 };
 
 class PlantMonitor {
@@ -75,8 +77,15 @@ private:
     bool Pcf8574Write(uint8_t data);
     uint8_t Pcf8574Read();
 
-    // 土壤湿度读取（通过PCF8574 DO引脚）
-    int SoilMoistureRead();
+    // ADS1115 I2C ADC 驱动
+    bool Ads1115Init();
+    bool Ads1115ReadConversion(int16_t* result);
+
+    // 土壤湿度模拟量读取（通过ADS1115 AO）
+    void SoilMoistureReadAnalog();
+
+    // 土壤湿度数字量读取（通过PCF8574 DO引脚，后备）
+    int SoilMoistureReadDigital();
 
     // 仅读取传感器数据（不执行自动控制），用于初始化时显示
     void ReadSensorsForInit();
@@ -95,6 +104,7 @@ private:
     esp_timer_handle_t init_delay_timer_ = nullptr;
     bool initialized_ = false;
     uint8_t pcf8574_output_state_;  // PCF8574当前输出状态
+    bool ads1115_present_ = false;  // ADS1115是否检测到
     bool auto_control_enabled_ = false;  // 自动控制是否已启动
 };
 

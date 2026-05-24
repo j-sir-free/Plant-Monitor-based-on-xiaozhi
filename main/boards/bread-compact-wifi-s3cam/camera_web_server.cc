@@ -40,7 +40,7 @@ img{width:100%;max-width:480px;border:2px solid #333;border-radius:4px}
   <div class="card"><div class="label">Temperature</div><div class="value t0" id="temp">--</div><div class="threshold" id="temp_th">--</div></div>
   <div class="card"><div class="label">Humidity</div><div class="value t1" id="humi">--</div><div class="threshold" id="humi_th">--</div></div>
   <div class="card"><div class="label">Light</div><div class="value t2" id="light">--</div><div class="threshold" id="light_th">--</div></div>
-  <div class="card"><div class="label">Soil</div><div class="value t3" id="soil">--</div></div>
+  <div class="card"><div class="label">Soil</div><div class="value t3" id="soil">--</div><div class="threshold" id="soil_th">--</div></div>
 </div>
 <div>
   <span class="relay r-off" id="rpump">PUMP</span>
@@ -54,10 +54,11 @@ function update(){
     document.getElementById('temp').textContent=d.temperature.toFixed(1)+' C';
     document.getElementById('humi').textContent=d.humidity.toFixed(0)+' %';
     document.getElementById('light').textContent=d.light;
-    document.getElementById('soil').textContent=d.soil_moisture?'OK':'DRY';
+    document.getElementById('soil').textContent=(d.soil_moisture_percent!==undefined?d.soil_moisture_percent+'%':(d.soil_moisture?'OK':'DRY'));
     document.getElementById('temp_th').textContent='T:'+d.thresholds.temp_min+'-'+d.thresholds.temp_max;
     document.getElementById('humi_th').textContent='H:'+d.thresholds.humidity_min+'-'+d.thresholds.humidity_max;
     document.getElementById('light_th').textContent='L:'+d.thresholds.light_min+'-'+d.thresholds.light_max;
+    document.getElementById('soil_th').textContent='S:'+(d.thresholds.soil_moisture_dry!==undefined?d.thresholds.soil_moisture_dry+'%':'--');
     var s=document.getElementById('rpump');s.textContent='PUMP';s.className='relay '+(d.relay_pump?'r-on':'r-off');
     s=document.getElementById('rlight');s.textContent='LIGHT';s.className='relay '+(d.relay_light?'r-on':'r-off');
     s=document.getElementById('rheat');s.textContent='HEAT';s.className='relay '+(d.relay_heater?'r-on':'r-off');
@@ -217,22 +218,27 @@ esp_err_t CameraWebServer::ApiSensorsHandler(httpd_req_t* req) {
     auto data = monitor.GetSensorData();
     auto thresholds = monitor.GetThresholds();
 
-    char buf[384];
+    char buf[512];
     snprintf(buf, sizeof(buf),
         "{\"temperature\":%.1f,\"humidity\":%.1f,\"light\":%d,"
-        "\"soil_moisture\":%d,\"relay_pump\":%s,\"relay_light\":%s,"
+        "\"soil_moisture_percent\":%d,\"soil_moisture_raw\":%d,"
+        "\"soil_moisture_digital\":%s,"
+        "\"relay_pump\":%s,\"relay_light\":%s,"
         "\"relay_heater\":%s,\"thresholds\":{"
         "\"temp_min\":%d,\"temp_max\":%d,"
         "\"humidity_min\":%d,\"humidity_max\":%d,"
-        "\"light_min\":%d,\"light_max\":%d}}",
+        "\"light_min\":%d,\"light_max\":%d,"
+        "\"soil_moisture_dry\":%d}}",
         data.temperature, data.humidity, data.light_value,
-        data.soil_moisture,
+        data.soil_moisture_percent, data.soil_moisture_raw,
+        data.soil_moisture_digital ? "true" : "false",
         data.relay_pump ? "true" : "false",
         data.relay_light ? "true" : "false",
         data.relay_heater ? "true" : "false",
         thresholds.temp_min, thresholds.temp_max,
         thresholds.humidity_min, thresholds.humidity_max,
-        thresholds.light_min, thresholds.light_max);
+        thresholds.light_min, thresholds.light_max,
+        thresholds.soil_moisture_dry);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
