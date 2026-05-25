@@ -35,12 +35,12 @@
 | 音频 I2S | GPIO1/2/42 (麦克风)，GPIO39/40/41 (扬声器) |
 | 板级 IO | LED=GPIO48，启动按钮=GPIO0 |
 | 摄像头 OV2640 | D0-D7(11,9,8,10,12,18,17,16)，XCLK=15，PCLK=13，VSYNC=6，HREF=7，SCCB SDA=4 SCL=5 |
-| LCD SPI | MOSI=20，CLK=19，DC=47，RST=21，CS=45，背光=38 |
+| LCD SPI | MOSI=20，CLK=19，DC=47，RST=21，CS=45，背光=38。（为什么不用PCF8574连接LCD：SPI LCD 需要 40MHz 时钟，PCF8574 通过 I2C 通信最高只能到 ~100kHz，差了 400 倍，屏幕根本无法工作。）|
 | LCD 型号 | 支持 ST7789/ST7735/ST7796/ILI9341/GC9A01 多款屏幕（通过 menuconfig 选择） |
 | DHT11 | GPIO14（单总线） |
 | 光照传感器 | GPIO3（ADC1_CH2） |
 | PCF8574 (I2C) | 地址 0x20，P0=水泵 P1=补光灯 P2=加热片 P4=土壤DO |
-| ADS1115 (I2C ADC) | 地址 0x48，16-bit ADC，土壤湿度模拟量采集 |
+| ADS1115 (I2C ADC) | 地址 0x48，16-bit ADC，土壤湿度模拟量采集，土壤湿度传感器使用了A0，还有A1、A2、A3可供使用 |
 | OneNET | 产品 ID、设备名、密钥、MQTT Broker |
 
 ### 2. `compact_wifi_board_s3cam.cc` — 主板初始化和显示管理
