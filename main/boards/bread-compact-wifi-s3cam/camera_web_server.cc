@@ -9,7 +9,7 @@
 #include <cstdio>
 
 static const char* TAG = "CameraWeb";
-
+//网页显示
 static const char HTML_PAGE[] = R"raw(
 <!DOCTYPE html>
 <html lang="zh-CN">

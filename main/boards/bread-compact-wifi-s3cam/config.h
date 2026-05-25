@@ -317,7 +317,7 @@
 #define PCF8574_PIN_RELAY_PUMP     0    // P0 - 水泵继电器
 #define PCF8574_PIN_RELAY_LIGHT    1    // P1 - 补光灯继电器
 #define PCF8574_PIN_RELAY_HEATER   2    // P2 - 加热片继电器
-#define PCF8574_PIN_SOIL_DO        4    // P4 - 土壤湿度传感器DO（数字输入）
+#define PCF8574_PIN_SOIL_DO        4    // P4 - 土壤湿度传感器AO（模拟输入）
 
 // 继电器接线模式：COM+NC = 高电平闭合，取消注释下面一行
 #define RELAY_ACTIVE_HIGH
