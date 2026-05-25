@@ -2,7 +2,7 @@
 
 ## 作者声明
 
-本项目由 **j-sir-free** 开发维护，基于 [小智 AI 聊天机器人](https://github.com/j-sir-free/Plant-Monitor-based-on-xiaozhi) 项目的 `bread-compact-wifi-lcd` 板级代码修改而来。
+本项目由 **j-sir-free** 开发维护，基于 [小智 AI 聊天机器人](https://github.com/j-sir-free/Plant-Monitor-based-on-xiaozhi) 项目的 `bread-compact-wifi-s3cam` 板级代码修改而来。
 
 硬件平台：ESP32-S3-CAM 开发板 + OV2640 摄像头 + ST7789/ILI9341/GC9A01 LCD（240x240）
 开源协议：继承上游项目协议
