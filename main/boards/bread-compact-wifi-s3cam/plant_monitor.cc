@@ -103,7 +103,7 @@ PlantMonitor::~PlantMonitor() {
 static void Pcf8574SdaSetOutput(void) {
     gpio_config_t cfg = {
         .pin_bit_mask = (1ULL << PCF8574_SDA_PIN),
-        .mode = GPIO_MODE_OUTPUT,
+        .mode = GPIO_MODE_OUTPUT_OD,   // 开漏输出, 符合I2C规范
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
@@ -304,6 +304,10 @@ bool PlantMonitor::Ads1115ReadConversion(int16_t* result) {
 }
 
 bool PlantMonitor::Ads1115Init() {
+    // I2C总线复位: 确保总线处于干净状态
+    I2cStop();
+    esp_rom_delay_us(200);
+
     uint16_t config = (ADS1115_CONFIG_MSB << 8) | ADS1115_CONFIG_LSB;
     if (!Ads1115WriteRegister(ADS1115_REG_CONFIG, config)) {
         ESP_LOGW(TAG, "ADS1115未检测到 (地址0x%02X)，请检查接线", ADS1115_I2C_ADDR);
