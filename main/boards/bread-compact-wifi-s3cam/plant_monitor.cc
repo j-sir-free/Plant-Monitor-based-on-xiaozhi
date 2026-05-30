@@ -1,5 +1,7 @@
 #include "plant_monitor.h"
 #include "board.h"
+#include "application.h"
+#include "auto_announce.h"
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <esp_rom_sys.h>
@@ -88,6 +90,10 @@ PlantMonitor::~PlantMonitor() {
     if (init_delay_timer_) {
         esp_timer_stop(init_delay_timer_);
         esp_timer_delete(init_delay_timer_);
+    }
+    if (auto_ai_timer_) {
+        esp_timer_stop(auto_ai_timer_);
+        esp_timer_delete(auto_ai_timer_);
     }
     if (adc_handle_) {
         adc_oneshot_del_unit(adc_handle_);
@@ -336,12 +342,16 @@ void PlantMonitor::SoilMoistureReadAnalog() {
 
     sensor_data_.soil_moisture_raw = (int)raw;
 
-    // 转换为百分比: 0% = 干燥(空气中), 100% = 浸入水中
-    int percent = 100 - (raw - SOIL_MOISTURE_WATER_VALUE) * 100
-                       / (SOIL_MOISTURE_AIR_VALUE - SOIL_MOISTURE_WATER_VALUE);
-    if (percent < 0) percent = 0;
-    if (percent > 100) percent = 100;
-    sensor_data_.soil_moisture_percent = percent;
+    // 反转型传感器: 干燥→高ADC→0%, 浸水→低ADC→100%
+    // percent = 100 - (raw - WET) / (DRY - WET) * 100
+    if (raw <= SOIL_MOISTURE_WET_VALUE) {
+        sensor_data_.soil_moisture_percent = 100;
+    } else if (raw >= SOIL_MOISTURE_DRY_VALUE) {
+        sensor_data_.soil_moisture_percent = 0;
+    } else {
+        sensor_data_.soil_moisture_percent = 100 - (raw - SOIL_MOISTURE_WET_VALUE) * 100
+                                                   / (SOIL_MOISTURE_DRY_VALUE - SOIL_MOISTURE_WET_VALUE);
+    }
 }
 // ==================== 继电器控制 ====================
 void PlantMonitor::SetRelay(int relay_index, bool on) {
@@ -432,6 +442,180 @@ void PlantMonitor::AutoControl() {
         SetRelay(0, false);
     }
 }
+// ==================== 自动AI模式 ====================
+// 每10秒检测传感器, 异常时通过声学回环触发小智AI播报+自动调整阈值
+static bool auto_ai_cooldown_ = false;
+static esp_timer_handle_t announce_delay_timer_ = nullptr;
+
+static void TriggerXiaozhiAnnounce() {
+    if (auto_ai_cooldown_) return;
+    auto_ai_cooldown_ = true;
+
+    auto& app = Application::GetInstance();
+    if (app.GetDeviceState() != kDeviceStateIdle) {
+        auto_ai_cooldown_ = false;
+        return;
+    }
+
+    ESP_LOGI(TAG, "AutoAI: 触发小智播报");
+
+    // 打开音频通道 (ToggleChatState: idle→connecting→listening)
+    app.Schedule([]() {
+        Application::GetInstance().ToggleChatState();
+    });
+
+    // 2.5秒后播放预录音频 (等待音频通道就绪)
+    if (announce_delay_timer_) {
+        esp_timer_stop(announce_delay_timer_);
+        esp_timer_delete(announce_delay_timer_);
+    }
+    esp_timer_create_args_t args = {
+        .callback = [](void*) {
+            auto& app = Application::GetInstance();
+            if (app.GetDeviceState() != kDeviceStateListening) {
+                auto_ai_cooldown_ = false;
+                return;
+            }
+
+            auto ogg = GetPlantAnnounceOgg();
+            if (ogg.size() < 28) {
+                ESP_LOGW(TAG, "AutoAI: OGG数据无效(%d字节), 请替换auto_announce.h中的占位数据", (int)ogg.size());
+                auto_ai_cooldown_ = false;
+                return;
+            }
+
+            ESP_LOGI(TAG, "AutoAI: 播放播报音频 (%d字节)", (int)ogg.size());
+            std::string ogg_copy(ogg);
+            app.Schedule([ogg_copy]() {
+                Application::GetInstance().PlaySound(ogg_copy);
+            });
+
+            // 60秒冷却
+            esp_timer_create_args_t cd_args = {
+                .callback = [](void*) { auto_ai_cooldown_ = false; },
+                .dispatch_method = ESP_TIMER_TASK,
+                .name = "ai_cooldown",
+                .skip_unhandled_events = false,
+            };
+            esp_timer_handle_t cd_timer;
+            ESP_ERROR_CHECK(esp_timer_create(&cd_args, &cd_timer));
+            ESP_ERROR_CHECK(esp_timer_start_once(cd_timer, 60000000));
+        },
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "announce_delay",
+        .skip_unhandled_events = false,
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&args, &announce_delay_timer_));
+    ESP_ERROR_CHECK(esp_timer_start_once(announce_delay_timer_, 2500000));
+}
+
+void PlantMonitor::StartAutoAiMode() {
+    if (auto_ai_enabled_) return;
+    auto_ai_enabled_ = true;
+    auto_ai_cooldown_ = false;
+
+    esp_timer_create_args_t args = {
+        .callback = [](void* arg) {
+            auto* self = static_cast<PlantMonitor*>(arg);
+            self->Update(); // 读取最新传感器数据
+
+            auto& s = self->sensor_data_;
+            auto& t = self->thresholds_;
+            bool abnormal = false;
+            char reason[128] = "";
+
+            // === 温度异常检测 ===
+            if (s.temperature > 0) {
+                if (s.temperature < t.temp_min) {
+                    snprintf(reason, sizeof(reason), "温度过低%.1f℃(下限%d℃)",
+                             s.temperature, t.temp_min);
+                    abnormal = true;
+                } else if (s.temperature > t.temp_max) {
+                    snprintf(reason, sizeof(reason), "温度过高%.1f℃(上限%d℃)",
+                             s.temperature, t.temp_max);
+                    abnormal = true;
+                }
+            }
+
+            // === 湿度异常检测 ===
+            if (!abnormal && s.humidity > 0) {
+                if (s.humidity < t.humidity_min) {
+                    snprintf(reason, sizeof(reason), "湿度过低%.0f%%(下限%d%%)",
+                             s.humidity, t.humidity_min);
+                    abnormal = true;
+                } else if (s.humidity > t.humidity_max) {
+                    snprintf(reason, sizeof(reason), "湿度过高%.0f%%(上限%d%%)",
+                             s.humidity, t.humidity_max);
+                    abnormal = true;
+                }
+            }
+
+            // === 光照异常检测 ===
+            if (!abnormal && s.light_value >= 0) {
+#ifdef LIGHT_SENSOR_INVERTED
+                // 反转型: ADC高=暗, ADC低=亮
+                if (s.light_value > t.light_max) {
+                    snprintf(reason, sizeof(reason), "光照不足%d(>上限%d)",
+                             s.light_value, t.light_max);
+                    abnormal = true;
+                } else if (s.light_value < t.light_min) {
+                    snprintf(reason, sizeof(reason), "光照过强%d(<下限%d)",
+                             s.light_value, t.light_min);
+                    abnormal = true;
+                }
+#else
+                if (s.light_value < t.light_min) {
+                    snprintf(reason, sizeof(reason), "光照不足%d(<下限%d)",
+                             s.light_value, t.light_min);
+                    abnormal = true;
+                } else if (s.light_value > t.light_max) {
+                    snprintf(reason, sizeof(reason), "光照过强%d(>上限%d)",
+                             s.light_value, t.light_max);
+                    abnormal = true;
+                }
+#endif
+            }
+
+            // === 土壤湿度异常检测 ===
+            if (!abnormal && s.soil_moisture_percent >= 0) {
+                if (s.soil_moisture_percent < t.soil_moisture_dry) {
+                    snprintf(reason, sizeof(reason), "土壤干燥%d%%(浇水阈值%d%%)",
+                             s.soil_moisture_percent, t.soil_moisture_dry);
+                    abnormal = true;
+                }
+            }
+
+            if (abnormal) {
+                ESP_LOGI(TAG, "AutoAI: 检测到异常 - %s", reason);
+                TriggerXiaozhiAnnounce();
+            }
+        },
+        .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "auto_ai_timer",
+        .skip_unhandled_events = false,
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&args, &auto_ai_timer_));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(auto_ai_timer_, AUTO_AI_INTERVAL_MS * 1000));
+    ESP_LOGI(TAG, "自动AI模式已启动 (间隔%d秒, 异常时触发小智播报)", AUTO_AI_INTERVAL_MS / 1000);
+}
+
+void PlantMonitor::StopAutoAiMode() {
+    if (!auto_ai_enabled_) return;
+    auto_ai_enabled_ = false;
+    if (auto_ai_timer_) {
+        esp_timer_stop(auto_ai_timer_);
+        esp_timer_delete(auto_ai_timer_);
+        auto_ai_timer_ = nullptr;
+    }
+    if (announce_delay_timer_) {
+        esp_timer_stop(announce_delay_timer_);
+        esp_timer_delete(announce_delay_timer_);
+        announce_delay_timer_ = nullptr;
+    }
+    ESP_LOGI(TAG, "自动AI模式已停止");
+}
+
 // ==================== 传感器数据更新 ====================
 void PlantMonitor::Update() {
     if (!initialized_) return;

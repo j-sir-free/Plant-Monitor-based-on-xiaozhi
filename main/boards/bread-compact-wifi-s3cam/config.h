@@ -333,11 +333,15 @@
 #define ADS1115_CONFIG_MSB          0x84
 #define ADS1115_CONFIG_LSB          0x83
 
-// 土壤湿度传感器校准值 (需根据实际传感器标定)
-// AIR_VALUE: 传感器在空气中(干燥)时的ADC读数
-// WATER_VALUE: 传感器浸入水中时的ADC读数
-#define SOIL_MOISTURE_AIR_VALUE     26000
-#define SOIL_MOISTURE_WATER_VALUE   8000
+// 土壤湿度传感器校准值 (反转型传感器: 干燥→高电压, 浸水→低电压)
+// DRY_VALUE: 传感器在干燥空气中时的ADC读数 (高值 → 0%)
+// WET_VALUE: 传感器浸入水中时的ADC读数 (低值 → 100%)
+// 查看串口日志中的 raw= 值, 根据实际读数修改这两个值
+#define SOIL_MOISTURE_DRY_VALUE     16000
+#define SOIL_MOISTURE_WET_VALUE     8000
+
+// 自动AI模式: 定时分析传感器数据并自动调整阈值
+#define AUTO_AI_INTERVAL_MS         10000   // 分析间隔 (毫秒)
 
 // OneNET 云平台配置
 #define ONENET_PRODUCT_ID   "Kp43RWJB3j"

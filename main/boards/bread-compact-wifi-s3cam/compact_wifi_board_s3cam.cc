@@ -77,6 +77,12 @@ public:
         // 去掉表情显示，改为显示传感器数据
     }
 
+    void SetAutoAiIndicator(bool on) {
+        if (label_auto_ai_) {
+            lv_label_set_text(label_auto_ai_, on ? "AUTO" : "");
+        }
+    }
+
     void SetupUI() override {
         SpiLcdDisplay::SetupUI();
         // 隐藏表情区域，改为传感器数据显示
@@ -142,6 +148,7 @@ private:
     lv_obj_t* label_humi_threshold_ = nullptr;
     lv_obj_t* label_light_threshold_ = nullptr;
     lv_obj_t* label_soil_threshold_ = nullptr;
+    lv_obj_t* label_auto_ai_ = nullptr;
 
     void CreateSensorPanel() {
         auto* screen = lv_screen_active();
@@ -162,6 +169,13 @@ private:
         lv_obj_set_style_text_color(title, lv_color_hex(0xAAAAAA), 0);
         lv_label_set_text(title, "Plant Monitor");
         lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 4);
+
+        // 自动AI模式指示器
+        label_auto_ai_ = lv_label_create(sensor_panel_);
+        lv_obj_set_style_text_font(label_auto_ai_, font, 0);
+        lv_obj_set_style_text_color(label_auto_ai_, lv_color_hex(0x00FF44), 0);
+        lv_label_set_text(label_auto_ai_, "");
+        lv_obj_align(label_auto_ai_, LV_ALIGN_TOP_RIGHT, -4, 4);
 
         // 温度
         label_temp_ = lv_label_create(sensor_panel_);
@@ -433,9 +447,12 @@ private:
             }
         }
 
-        app.Schedule([self, data, thresholds]() {
+        bool auto_ai = GetPlantMonitor().IsAutoAiMode();
+
+        app.Schedule([self, data, thresholds, auto_ai]() {
             if (self->display_) {
                 self->display_->UpdateSensorDisplay(data, thresholds);
+                self->display_->SetAutoAiIndicator(auto_ai);
             }
         });
     }
@@ -448,6 +465,15 @@ private:
                 return;
             }
             app.ToggleChatState();
+        });
+
+        boot_button_.OnLongPress([this]() {
+            auto& monitor = GetPlantMonitor();
+            if (monitor.IsAutoAiMode()) {
+                monitor.StopAutoAiMode();
+            } else {
+                monitor.StartAutoAiMode();
+            }
         });
     }
 

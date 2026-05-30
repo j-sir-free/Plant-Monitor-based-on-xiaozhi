@@ -60,6 +60,11 @@ public:
     // 手动控制继电器
     void SetRelay(int relay_index, bool on);
 
+    // 自动AI模式: 定时检测传感器, 异常时触发小智AI播报+自动调整阈值
+    void StartAutoAiMode();
+    void StopAutoAiMode();
+    bool IsAutoAiMode() const { return auto_ai_enabled_; }
+
 private:
     PlantMonitor();
     ~PlantMonitor();
@@ -106,6 +111,8 @@ private:
     uint8_t pcf8574_output_state_;  // PCF8574当前输出状态
     bool ads1115_present_ = false;  // ADS1115是否检测到
     bool auto_control_enabled_ = false;  // 自动控制是否已启动
+    bool auto_ai_enabled_ = false;      // 自动AI模式是否已开启
+    esp_timer_handle_t auto_ai_timer_ = nullptr;
 };
 
 // 单例访问辅助函数
