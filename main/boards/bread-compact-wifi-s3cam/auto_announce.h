@@ -1,22 +1,29 @@
-// 自动AI播报音频数据 (OGG/Opus 格式)
-// 用任意中文TTS工具生成, 内容: "小智，检测植物环境并自动调整参数"
-// 格式要求: 16kHz 采样率, 单声道, Opus编码
-//
-// 生成命令示例 (用 xxd 转换):
-//   xxd -i your_announce.ogg > announce_data.txt
-//   把输出的数组内容替换到下面的 plant_announce_ogg[] 中
-//
-// 在电脑上用 Python 生成 TTS 的简单方法:
-//   pip install edge-tts
-//   edge-tts --voice zh-CN-XiaoxiaoNeural --text "小智，检测植物环境并自动调整参数" --write-media announce.mp3
-//   然后用 ffmpeg 转换: ffmpeg -i announce.mp3 -ar 16000 -ac 1 -c:a libopus announce.ogg
-
+/**
+ * @file    auto_announce.h
+ * @brief   自动AI播报音频 — OGG/Opus 预录音频数据
+ * @author  JJD-YOURFATHER
+ *
+ * 存放用于声学回环触发的预录音频, 内容: "小智，检测植物环境并自动调整参数"
+ *
+ * 算法: 声学回环 (Acoustic Loopback)
+ *   设备程序化触发小智对话通道 → 喇叭播放此OGG → 麦克风拾音
+ *   → 服务器 STT 识别 → AI 调用 MCP 工具分析并调整阈值 → TTS 播报结果
+ *
+ * 音频参数: 16kHz 采样率 | 单声道 | Opus 编码 | ~2-3秒
+ *
+ * 生成方法 (在电脑上执行):
+ *   pip install edge-tts
+ *   edge-tts --voice zh-CN-XiaoxiaoNeural \
+ *     --text "小智，检测植物环境并自动调整参数" --write-media announce.mp3
+ *   ffmpeg -i announce.mp3 -ar 16000 -ac 1 -c:a libopus announce.ogg
+ *   xxd -i announce.ogg  →  粘贴到下方数组
+ */
 #pragma once
 #include <cstdint>
 #include <cstddef>
 #include <string_view>
 
-// TODO: 替换为实际OGG数据 (用 xxd -i 生成后粘贴到这里)
+/** OGG/Opus 音频数据 (xxd -i 生成), 通过 PlaySound() 解码播放 */
 static const uint8_t plant_announce_ogg[] = {
     0x4f,     0x67,     0x67,     0x53,     0x00,     0x02,     0x00,     0x00,     0x00,     0x00,     0x00,     0x00,
     0x00,     0x00,     0x81,     0x64,     0x02,     0x0f,     0x00,     0x00,     0x00,     0x00,     0x18,     0x1b,
